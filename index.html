@@ -1,0 +1,47 @@
+<title>دبا من قوقل</title>
+<style>
+html,body{margin:0;height:100%;background:#9fc3e6;overflow:hidden;font-family:Tajawal,Arial}
+#c{width:100%;height:100%;display:block}
+#msg{position:fixed;top:12px;left:50%;transform:translateX(-50%);background:#fff;padding:10px 16px;border-radius:12px;direction:rtl;font-size:18px;box-shadow:0 2px 8px #0003;max-width:90vw}
+#paste{position:fixed;inset:0;display:none;align-items:center;justify-content:center;background:#0006}
+#paste div{background:#fff;padding:24px;border-radius:16px;direction:rtl;text-align:center;font-size:20px}
+#paste input{width:70vw;max-width:520px;font-size:16px;padding:10px;margin-top:12px;direction:ltr}
+#attr{position:fixed;left:8px;bottom:6px;font:12px Arial;color:#fff;text-shadow:0 0 3px #000;direction:ltr}
+</style>
+<canvas id="c"></canvas>
+<div id="msg">جاري تحميل دبا الحصن من قوقل…</div>
+<div id="paste"><div>الصق رمز الربط هنا<br><input id="tok" placeholder="Ctrl + V"></div></div>
+<div id="attr">Google · Cesium</div>
+<script src="https://cdn.jsdelivr.net/npm/three@0.149.0/build/three.min.js"></script>
+<script src="tiles.js"></script>
+<script>
+const T = THREE, D = window.DibbaTiles, msg = document.getElementById('msg');
+let token = null; try { token = localStorage.getItem('ionToken'); } catch (e) {}
+const LAT = 25.61776 * Math.PI/180, LON = 56.27522 * Math.PI/180;   // كورنيش دبا الحصن
+function start(tok){
+  const renderer = new T.WebGLRenderer({canvas: document.getElementById('c'), antialias: true});
+  renderer.setPixelRatio(Math.min(2, devicePixelRatio)); renderer.outputEncoding = T.sRGBEncoding;
+  const scene = new T.Scene(); scene.background = new T.Color(0x9fc3e6);
+  scene.add(new T.HemisphereLight(0xffffff, 0x887766, 1.2)); const sun = new T.DirectionalLight(0xffffff, 0.8); sun.position.set(1, 2, 1); scene.add(sun);
+  const camera = new T.PerspectiveCamera(60, 1, 1, 40000);
+  const tiles = new D.TilesRenderer();
+  tiles.registerPlugin(new D.CesiumIonAuthPlugin({apiToken: tok, assetId: '2275207', autoRefreshToken: true}));
+  const dl = new D.DRACOLoader(); dl.setDecoderPath('https://www.gstatic.com/draco/versioned/decoders/1.5.6/'); const gl = new D.GLTFLoader(tiles.manager); gl.setDRACOLoader(dl); tiles.manager.addHandler(/\.gltf$/, gl);
+  tiles.errorTarget = 6;
+  tiles.setLatLonToYUp(LAT, LON);
+  scene.add(tiles.group);
+  tiles.setCamera(camera); tiles.setResolutionFromRenderer(camera, renderer);
+  let loaded = 0; tiles.addEventListener ? tiles.addEventListener('load-model', () => { loaded++; msg.textContent = 'تحميل… ' + loaded; if (loaded > 60) msg.style.display = 'none'; }) : 0;
+  tiles.onLoadModel = () => { loaded++; msg.textContent = 'تحميل… ' + loaded; if (loaded > 60) msg.style.display = 'none'; };
+  // camera: X north, Z east, Y up. Look at the corniche from 250 m up, to the north-west
+  let ang = 0; const R = 420, Hh = 260;
+  function resize(){ renderer.setSize(innerWidth, innerHeight, false); camera.aspect = innerWidth/innerHeight; camera.updateProjectionMatrix(); tiles.setResolutionFromRenderer(camera, renderer); }
+  addEventListener('resize', resize); resize();
+  let drag = null; addEventListener('pointerdown', e => drag = [e.clientX, ang]); addEventListener('pointerup', () => drag = null); addEventListener('pointermove', e => { if (drag) ang = drag[1] + (e.clientX - drag[0])*0.005; });
+  window.__t = {tiles, camera, scene, renderer};
+  (function loop(){ requestAnimationFrame(loop); if (!drag) ang += 0.0008; camera.position.set(Math.cos(ang)*R, Hh, Math.sin(ang)*R); camera.lookAt(0, 0, 0); camera.updateMatrixWorld(); tiles.update(); renderer.render(scene, camera); })();
+  window.onerror = (m) => { msg.style.display = 'block'; msg.textContent = 'خطأ: ' + m; };
+}
+if (token) start(token); else { const p = document.getElementById('paste'), inp = document.getElementById('tok'); p.style.display = 'flex'; inp.focus();
+  inp.addEventListener('input', () => { const v = inp.value.trim(); if (v.length > 100){ try { localStorage.setItem('ionToken', v); } catch (e) {} p.style.display = 'none'; start(v); } }); }
+</script>
