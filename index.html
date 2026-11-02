@@ -288,7 +288,7 @@ const GG = (function(){
     if (DW.Hc(x, z) < WATER_Y - 0.6) return DW.Hy(x, z);   // open sea: the real sea bed, so the kids swim
     const ry = (y !== undefined ? y : S.pos.y) + 1.4, key = Math.round(x*5) + ',' + Math.round(z*5) + ',' + Math.round(ry*2);
     let v = cache.get(key); if (v !== undefined) return v;
-    v = g.downHit(x, ry, z); if (v === null) v = DW.Hy(x, z);   // nothing under you yet (still loading): the game's own height
+    v = g.downHit(x, ry, z); if (v === null) v = g.downHit(x, ry + 9, z); if (v === null) v = DW.Hy(x, z);   // a step or a slope up (or we started under Google's ground): look a bit higher   // nothing under you yet (still loading): the game's own height
     cache.set(key, v); return v;
   };
   // walls: a level ray at knee height (kerbs and steps are lower, so you walk/drive over them; walls and trunks stop you)
