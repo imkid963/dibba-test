@@ -275,7 +275,7 @@ const GG = (function(){
   const fixMat = s => s.traverse(o => { if (o.material){ o.material.toneMapped = false; } });   // keep Google's own colours
   tiles.addEventListener('load-model', e => e && e.scene && fixMat(e.scene));
   tiles.setCamera(camera); tiles.setResolutionFromRenderer(camera, renderer);
-  g.tiles = tiles; g.root = root;
+  g.tiles = tiles; g.root = root; window.__GG = g; window.__cam = camera;
   const rc = new T.Raycaster(); rc.firstHitOnly = true;
   const O = new T.Vector3(), DN = new T.Vector3(0, -1, 0), DIR = new T.Vector3(), NRM = new T.Vector3();
   const cast = (o, d, far) => { rc.set(o, d); rc.near = 0; rc.far = far; const h = rc.intersectObject(tiles.group, true); return h.length ? h[0] : null; };
@@ -3627,6 +3627,7 @@ function loop(now){
   }
 }
 resize(); resetWorld(); placeSelect(); applySettings();
+window.__S = S; window.__DW = DW; window.__kids = kids;
 if (GG.on){ Object.values(kids).forEach(k => GG.keep.add(k.root)); GG.keep.add(car.root); GG.hideStatic(); }
 requestAnimationFrame(loop);
 }
