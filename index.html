@@ -307,14 +307,19 @@ const GG = (function(){
   g.camF = (x0, z0, x1, z1) => { const dx = x1 - x0, dz = z1 - z0, L = Math.hypot(dx, dz); if (L < 0.01) return 1; DIR.set(dx/L, 0, dz/L); O.set(x0, S.pos.y + 1.6, z0); const h = cast(O, DIR, L); return h ? h.distance/L : 1; };
   g.keep = new Set([root]);
   g.hideStatic = () => { scene.children.forEach(o => { if (!g.keep.has(o) && !o.isLight && o !== window.__dome && o !== window.__sun && o !== window.__clouds) g.hidden.push(o); }); };
-  let alignT = -1;
+  // height: Google's heights are above the ellipsoid; the sea at Dibba sits about 31 m below it. Start with that,
+  // then fine-tune once on the real sea surface near the start (so Google's sea = the game's water level)
+  root.position.y = 30.7; g.ready = true;
+  let seaPt = null, tries = 0, nextT = 0;
+  const findSea = () => { for (let r = 60; r < 900; r += 30) for (let a = 0; a < 24; a++){ const x = Math.cos(a*PI/12)*r, z = Math.sin(a*PI/12)*r; if (DW.Hc(x, z) < WATER_Y - 4) return [x, z]; } return null; };
   g.update = () => {
     camera.updateMatrixWorld(); tiles.setResolutionFromRenderer(camera, renderer); tiles.update(); cache.clear();
     if ((g.n++ % 20) === 0) for (const o of g.hidden) o.visible = false;
-    if (!g.ready || (alignT >= 0 && performance.now() > alignT)){   // line Google's ground up with the game's height at the start
-      const h = g.downHit(0, root.position.y + 300, 0);
-      if (h !== null){ root.position.y += DW.Hy(0, 0) - h; cache.clear(); alignT = g.ready ? -1 : performance.now() + 6000; g.ready = true; }
-    }
+    const now = performance.now();
+    if (!seaPt && DW && tries === 0){ seaPt = findSea(); if (!seaPt) tries = 99; }
+    if (seaPt && tries < 30 && now > nextT){ nextT = now + 2000; tries++;
+      const h = g.downHit(seaPt[0], WATER_Y + 60, seaPt[1]);
+      if (h !== null && Math.abs(h - WATER_Y) < 8){ root.position.y += WATER_Y - h; cache.clear(); tries = 99; g.seaFix = WATER_Y - h; } }
   };
   return g;
 })();
@@ -442,7 +447,7 @@ function H_OLD(x, z){
    camp code (tent, fire, car, football) keeps its spot round (0, 0). Phase 1 is free exploring: no missions, animals or stars here yet.
    The first world's places are still built (so every shared function keeps working) but into a box that is never drawn: see sinkOn(). */
 let DW = null;
-const H = DIB ? ((x, z) => GG.on && GG.ready ? GG.H(x, z) : DW.Hy(x, z)) : H_OLD;   // Dibba: real ground (or a villa's paved yard)
+const H = DIB ? ((x, z) => GG.on && GG.ready && GG.live ? GG.H(x, z) : DW.Hy(x, z)) : H_OLD;   // Dibba: real ground (or a villa's paved yard)
 // build the first world's own things into SINK (never added to the scene) while the Dibba world is loading
 const SINK = new T.Group(); let sinkC0 = -1;
 function sinkOn(){ if (!DIB) return; scene.add = function(){ for (let i = 0; i < arguments.length; i++) SINK.add(arguments[i]); return scene; }; sinkC0 = typeof colliders !== 'undefined' ? colliders.length : -1; }
@@ -501,7 +506,7 @@ if (DIB){
         let h = VH.get(i); if (!h){ h = {g: {position: new T.Vector3(d.x - Math.sin(d.ry)*3.5, d.y, d.z - Math.cos(d.ry)*3.5)}, ry: d.ry, i: 20 + i % 7, villa: true}; VH.set(i, h); } return h; } } }
     return null; };
   // the camera never goes through a wall: shorten the boom when a wall is in the way
-  camWall = (x0, z0, x1, z1) => GG.on && GG.ready ? GG.camF(x0, z0, x1, z1) : DW.rayWalls(x0, z0, x1, z1);
+  camWall = (x0, z0, x1, z1) => GG.on && GG.ready && GG.live ? GG.camF(x0, z0, x1, z1) : DW.rayWalls(x0, z0, x1, z1);
   // a free standing spot near (x, z): not inside a building or a yard, not in the sea
   freeNear = (x, z) => { for (let r = 0; r < 260; r += 4) for (let a = 0; a < 12; a++){ const px = x + Math.cos(a*PI/6)*r, pz = z + Math.sin(a*PI/6)*r; if (!DW.inBld(px, pz) && DW.shoreDist(px, pz) > 6 && !DW.blockedWall(px, pz, 1.5)) return [px, pz]; if (!r) break; } return [x, z]; };
   // palms (instanced, thousands of them): a 12 m grid to find the one in front of you (shake it for dates) and to bump into trunks
@@ -2603,7 +2608,7 @@ function exitRide(){
 
 /* ================= play ================= */
 const GRAV = 24;
-function groundAt(x, z, y){ let g = S.indoor && inRoom(x, z) ? ROOM.y : GG.on && GG.ready ? GG.H(x, z, y) : H(x, z); for (const c of colliders){ if (!!c.room !== !!S.indoor) continue; if (c.top !== null && c.r && Math.hypot(x - c.x, z - c.z) < (c.land || c.r*0.85) && y >= c.top - 0.35) g = Math.max(g, c.top); } return g; }
+function groundAt(x, z, y){ let g = S.indoor && inRoom(x, z) ? ROOM.y : GG.on && GG.ready && GG.live ? GG.H(x, z, y) : H(x, z); for (const c of colliders){ if (!!c.room !== !!S.indoor) continue; if (c.top !== null && c.r && Math.hypot(x - c.x, z - c.z) < (c.land || c.r*0.85) && y >= c.top - 0.35) g = Math.max(g, c.top); } return g; }
 // the car, camel and horse have a real height: jump close to one and you hop over it (or land on top), walk into it and it still stops you
 const HOP_BOX = new T.Box3();
 const HOP_TMP = new T.Box3();
@@ -2622,7 +2627,7 @@ function readStick(){
 function collide(nx, nz, rad, onHit){
   for (const c of colliders){
     if (!c.r || !!c.room !== !!S.indoor) continue;
-    if (GG.on && GG.ready && c !== carCol) continue;
+    if (GG.on && GG.ready && GG.live && c !== carCol) continue;
     const dx = nx - c.x, dz = nz - c.z, d = Math.hypot(dx, dz), R = c.r + rad;
     if (d < R){
       if (c.top !== null && S.pos.y >= c.top - 0.35 && !S.ride) continue;
@@ -2640,7 +2645,7 @@ function collide(nx, nz, rad, onHit){
     }
   }
   if (DIB){
-    if (GG.on && GG.ready && !S.indoor){ const w = GG.wall(S.pos.x, S.pos.y, S.pos.z, nx, nz, rad, !!S.ride); nx = w[0]; nz = w[1]; if (w[2] && onHit) onHit(w[2][0], w[2][1]); }
+    if (GG.on && GG.ready && GG.live && !S.indoor){ const w = GG.wall(S.pos.x, S.pos.y, S.pos.z, nx, nz, rad, !!S.ride); nx = w[0]; nz = w[1]; if (w[2] && onHit) onHit(w[2][0], w[2][1]); }
     else if (!S.indoor){   // walls: in small steps from where you are, so a fast car (or a slow frame) never slips through one
       const dx = nx - S.pos.x, dz = nz - S.pos.z, n = Math.min(60, Math.max(1, Math.ceil(Math.hypot(dx, dz)/0.25))); let x = S.pos.x, z = S.pos.z, hit = null;
       for (let i = 0; i < n; i++){ x += dx/n; z += dz/n; const w = DW.pushWalls(x, z, rad + 0.08); if (w[2]){ x = w[0]; z = w[1]; hit = w[2]; } }
@@ -3627,7 +3632,7 @@ function loop(now){
   }
 }
 resize(); resetWorld(); placeSelect(); applySettings();
-window.__S = S; window.__DW = DW; window.__kids = kids;
+window.__S = S; window.__DW = DW; window.__kids = kids; GG.live = true;
 if (GG.on){ Object.values(kids).forEach(k => GG.keep.add(k.root)); GG.keep.add(car.root); GG.hideStatic(); }
 requestAnimationFrame(loop);
 }
