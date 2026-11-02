@@ -272,8 +272,10 @@ const GG = (function(){
   tiles.errorTarget = TOUCH ? 10 : 6;
   tiles.setLatLonToYUp(LAT*PI/180, LON*PI/180);   // tiles frame: x = north, z = east, y = up
   const root = new T.Group(); root.rotation.y = PI/2; root.add(tiles.group); scene.add(root);   // game frame: x = east, z = south
-  const fixMat = s => s.traverse(o => { if (o.material){ o.material.toneMapped = false; } });   // keep Google's own colours
+  const ANI = Math.min(16, renderer.capabilities.getMaxAnisotropy());
+  const fixMat = s => s.traverse(o => { if (o.material){ o.material.toneMapped = false; if (o.material.map){ o.material.map.anisotropy = ANI; o.material.map.needsUpdate = true; } } });   // keep Google's own colours
   tiles.addEventListener('load-model', e => e && e.scene && fixMat(e.scene));
+  ['parseQueue', 'downloadQueue', 'processNodeQueue'].forEach(q => { if (tiles[q]) tiles[q].schedulingCallback = cb => setTimeout(cb, 0); });
   tiles.setCamera(camera); tiles.setResolutionFromRenderer(camera, renderer);
   g.tiles = tiles; g.root = root; window.__GG = g; window.__cam = camera;
   const rc = new T.Raycaster(); rc.firstHitOnly = true;
@@ -286,7 +288,7 @@ const GG = (function(){
     if (DW.Hc(x, z) < WATER_Y - 0.6) return DW.Hy(x, z);   // open sea: the real sea bed, so the kids swim
     const ry = (y !== undefined ? y : S.pos.y) + 1.4, key = Math.round(x*5) + ',' + Math.round(z*5) + ',' + Math.round(ry*2);
     let v = cache.get(key); if (v !== undefined) return v;
-    v = g.downHit(x, ry, z); if (v === null) v = g.downHit(x, ry + 400, z); if (v === null) v = DW.Hy(x, z);
+    v = g.downHit(x, ry, z); if (v === null) v = DW.Hy(x, z);   // nothing under you yet (still loading): the game's own height
     cache.set(key, v); return v;
   };
   // walls: a level ray at knee height (kerbs and steps are lower, so you walk/drive over them; walls and trunks stop you)
@@ -313,6 +315,7 @@ const GG = (function(){
   let seaPt = null, tries = 0, nextT = 0;
   const findSea = () => { for (let r = 60; r < 900; r += 30) for (let a = 0; a < 24; a++){ const x = Math.cos(a*PI/12)*r, z = Math.sin(a*PI/12)*r; if (DW.Hc(x, z) < WATER_Y - 4) return [x, z]; } return null; };
   g.update = () => {
+    tiles.errorTarget = TOUCH ? 8 : 4;   // Google's sign-in sets 40 (blurry); keep it sharp near the kids
     camera.updateMatrixWorld(); tiles.setResolutionFromRenderer(camera, renderer); tiles.update(); cache.clear();
     if ((g.n++ % 20) === 0) for (const o of g.hidden) o.visible = false;
     const now = performance.now();
@@ -2819,12 +2822,13 @@ function updatePlay(dt, t){
   // camera
   const portrait = innerWidth < innerHeight;
   const inKh = S.ride === 'boat' && inKhor(S.pos.x, S.pos.z);
-  const camD = S.ride === 'car' ? (portrait ? 14 : 12) : S.ride === 'boat' ? (inKh ? (portrait ? 11 : 9) : (portrait ? 17 : 14)) : S.ride === 'camel' || S.ride === 'horse' ? (portrait ? 10 : 8.5) : (portrait ? 8.2 : 7);
-  const camH = S.ride === 'car' ? 6.2 : S.ride === 'boat' ? 7.5 : S.ride === 'camel' || S.ride === 'horse' ? 4.8 : 3.3;
+  let camD = S.ride === 'car' ? (portrait ? 14 : 12) : S.ride === 'boat' ? (inKh ? (portrait ? 11 : 9) : (portrait ? 17 : 14)) : S.ride === 'camel' || S.ride === 'horse' ? (portrait ? 10 : 8.5) : (portrait ? 8.2 : 7);
+  let camH = S.ride === 'car' ? 6.2 : S.ride === 'boat' ? 7.5 : S.ride === 'camel' || S.ride === 'horse' ? 4.8 : 3.3;
   if (S.indoor){   // inside a house: a closer camera that stays within the walls
     const R = ROOM, ix = clamp(S.pos.x + Math.sin(S.camYaw)*4.6, R.x - R.w/2 + 0.45, R.x + R.w/2 - 0.45), iz = clamp(S.pos.z + Math.cos(S.camYaw)*4.6, R.z - R.d/2 + 0.45, R.z + R.d/2 - 0.45);
     camPos.lerp(new T.Vector3(ix, R.y + 2.9, iz), Math.min(1, dt*6)); camLook.lerp(new T.Vector3(S.pos.x, S.pos.y + 1.1, S.pos.z), Math.min(1, dt*8)); return;
   }
+  if (GG.on){ camD *= 1.45; camH += 4.5; }   // Google's map is sharp from a little higher up (like a drone behind the kids)
   let cx = S.pos.x + Math.sin(S.camYaw)*camD, cz = S.pos.z + Math.cos(S.camYaw)*camD, camK = 1;
   if (DIB){ const f = camWall(S.pos.x, S.pos.z, cx, cz); if (f < 1){ camK = Math.max(0.28, f*0.92 - 0.3/camD); cx = S.pos.x + (cx - S.pos.x)*camK; cz = S.pos.z + (cz - S.pos.z)*camK; } }
   let cyy = Math.max(S.pos.y, H(S.pos.x, S.pos.z)) + camH + (S.camPitch || 0)*camD; cyy = Math.max(cyy, H(cx, cz) + 1.6, WATER_Y + 1.5);
