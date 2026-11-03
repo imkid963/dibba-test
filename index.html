@@ -261,13 +261,13 @@ const camera = DIB ? new T.PerspectiveCamera(55, 1, 0.3, 20000) : new T.Perspect
    The ground, buildings, trees and sea all come from Google's photorealistic 3D map (via Cesium's free plan).
    The hand-built Dibba still loads underneath (for the minimap, the sea depth, the start points), but is never drawn. */
 const GG = (function(){
-  let tok = null; try { tok = localStorage.getItem('ionToken'); } catch (e) {}
+  let tok = window.__ionTok || null; try { tok = tok || localStorage.getItem('ionToken'); } catch (e) {}   // the game's own key (ion.txt, locked to this site), else one pasted on this device
   const g = {on: DIB && !!tok && !!window.DibbaTiles, ready: false, hidden: [], n: 0};
   if (!g.on) return g;
   const D = window.DibbaTiles, MXg = 111320*Math.cos(25.61*PI/180), LAT = 25.61 + 869.81/110540, LON = 56.26 + 1526.11/MXg;   // game (0, 0) = the start on the corniche
   const tiles = new D.TilesRenderer();
   tiles.registerPlugin(new D.CesiumIonAuthPlugin({apiToken: tok, assetId: '2275207', autoRefreshToken: true}));
-  const dl = new D.DRACOLoader(); dl.setDecoderPath('https://www.gstatic.com/draco/versioned/decoders/1.5.6/');
+  const dl = new D.DRACOLoader(); dl.setDecoderPath('https://www.gstatic.com/draco/versioned/decoders/1.5.6/'); dl.setWorkerLimit(Math.min(8, Math.max(2, (navigator.hardwareConcurrency || 4) - 1)));   // decode several pieces at once (faster loading)
   const gl = new D.GLTFLoader(tiles.manager); gl.setDRACOLoader(dl); tiles.manager.addHandler(/\.gltf$/, gl);
   tiles.errorTarget = TOUCH ? 10 : 6;
   tiles.setLatLonToYUp(LAT*PI/180, LON*PI/180);   // tiles frame: x = north, z = east, y = up
@@ -276,19 +276,73 @@ const GG = (function(){
   const fixMat = s => s.traverse(o => { if (o.material){ o.material.toneMapped = false; if (o.material.map){ o.material.map.anisotropy = ANI; o.material.map.needsUpdate = true; } } });   // keep Google's own colours
   tiles.addEventListener('load-model', e => e && e.scene && fixMat(e.scene));
   ['parseQueue', 'downloadQueue', 'processNodeQueue'].forEach(q => { if (tiles[q]) tiles[q].schedulingCallback = cb => setTimeout(cb, 0); });
+  if (tiles.parseQueue) tiles.parseQueue.maxJobs = TOUCH ? 6 : 16;
+  if (tiles.lruCache && TOUCH){ tiles.lruCache.minSize = 300; tiles.lruCache.maxSize = 450; }   // phones/iPads: keep less in memory so Safari never runs out
   tiles.setCamera(camera); tiles.setResolutionFromRenderer(camera, renderer);
   g.tiles = tiles; g.root = root; window.__GG = g; window.__cam = camera;
   const rc = new T.Raycaster(); rc.firstHitOnly = true;
   const O = new T.Vector3(), DN = new T.Vector3(0, -1, 0), DIR = new T.Vector3(), NRM = new T.Vector3();
-  const cast = (o, d, far) => { rc.set(o, d); rc.near = 0; rc.far = far; const h = rc.intersectObject(tiles.group, true); return h.length ? h[0] : null; };
+  const bg = new T.Group(); scene.add(bg); g.bg = bg;   // the 3D buildings we raise on Google's ground
+  const TG = [tiles.group, bg];
+  const cast = (o, d, far) => { rc.set(o, d); rc.near = 0; rc.far = far; const h = rc.intersectObjects(TG, true); return h.length ? h[0] : null; };
+  const castT = (o, d, far) => { rc.set(o, d); rc.near = 0; rc.far = far; const h = rc.intersectObject(tiles.group, true); return h.length ? h[0] : null; };
   g.downHit = (x, y, z) => { O.set(x, y, z); const h = cast(O, DN, 600); return h ? h.point.y : null; };
+  const groundT = (x, z) => { O.set(x, 250, z); const h = castT(O, DN, 600); return h ? h.point.y : null; };
+  /* ---- buildings: roofs found on aerial photos, raised as real 3D blocks standing on Google's ground ---- */
+  const B = {list: null, cells: new Map(), CS: 80};
+  fetch('data/bld.json?v=1').then(r => r.json()).then(a => {
+    B.list = a;
+    a.forEach((b, i) => { const q = b[2]; let cx = 0, cz = 0; const n = q.length/2; for (let k = 0; k < q.length; k += 2){ cx += q[k]; cz += q[k+1]; } cx /= n; cz /= n; b.push(cx, cz);
+      const key = Math.floor(cx/B.CS) + ',' + Math.floor(cz/B.CS); if (!B.cells.has(key)) B.cells.set(key, {ids: [], built: false, t0: 0, cx: (Math.floor(cx/B.CS) + 0.5)*B.CS, cz: (Math.floor(cz/B.CS) + 0.5)*B.CS}); B.cells.get(key).ids.push(i); });
+  }).catch(() => {});
+  const winTex = (() => { const c = document.createElement('canvas'); c.width = c.height = 64; const x = c.getContext('2d');
+    x.fillStyle = '#fff'; x.fillRect(0, 0, 64, 64); x.fillStyle = '#5d6b78'; x.fillRect(18, 20, 28, 22); x.fillStyle = '#c9c2b4'; x.fillRect(0, 58, 64, 6);
+    const t = new T.CanvasTexture(c); t.wrapS = t.wrapT = T.RepeatWrapping; t.encoding = T.sRGBEncoding; t.anisotropy = ANI; return t; })();
+  const wallMat = new T.MeshLambertMaterial({vertexColors: true, map: winTex, side: T.DoubleSide});
+  const roofMat = new T.MeshLambertMaterial({vertexColors: true, side: T.DoubleSide});
+  const buildCell = (cell, force) => {
+    const W = {p: [], c: [], u: []}, R = {p: [], c: []}; let miss = 0;
+    for (const i of cell.ids){
+      const b = B.list[i], q = b[2], n = q.length/2, cx = b[3], cz = b[4];
+      let base = 1e9, ok = true;
+      for (let k = 0; k < n; k++){ const vx = q[2*k], vz = q[2*k+1], dx = vx - cx, dz = vz - cz, L = Math.hypot(dx, dz) || 1;
+        const y = groundT(vx + dx/L*1.5, vz + dz/L*1.5); if (y === null){ ok = false; break; } base = Math.min(base, y); }
+      if (!ok){ if (!force){ miss++; continue; } base = DW.Hy(cx, cz); }
+      if (base < WATER_Y + 0.3) continue;   // in the sea: a wrong guess, skip it
+      const top0 = groundT(cx, cz); let h = top0 !== null ? top0 - base + 0.25 : b[0]; if (h < 2.8) h = Math.max(b[0], 3); h = Math.min(h, 40);
+      const top = base + h, rc0 = b[1].map(v => v/255), wc = rc0.map(v => 0.55 + v*0.45);
+      let per = 0;
+      for (let k = 0; k < n; k++){ const k2 = (k + 1)%n, ax = q[2*k], az = q[2*k+1], bx = q[2*k2], bz = q[2*k2+1], L = Math.hypot(bx - ax, bz - az);
+        const u0 = per/3.2, u1 = (per + L)/3.2, v1 = h/3.1; per += L;
+        W.p.push(ax, base, az, bx, base, bz, bx, top, bz, ax, base, az, bx, top, bz, ax, top, az);
+        W.u.push(u0, 0, u1, 0, u1, v1, u0, 0, u1, v1, u0, v1);
+        for (let j = 0; j < 6; j++) W.c.push(wc[0], wc[1], wc[2]); }
+      const pts = []; for (let k = 0; k < n; k++) pts.push(new T.Vector2(q[2*k], q[2*k+1]));
+      const tri = T.ShapeUtils.triangulateShape(pts, []);
+      for (const t of tri) for (const j of t){ R.p.push(pts[j].x, top, pts[j].y); R.c.push(rc0[0], rc0[1], rc0[2]); }
+    }
+    if (miss && !force) return false;
+    const mk = (A, mat, uv) => { if (!A.p.length) return; const ge = new T.BufferGeometry(); ge.setAttribute('position', new T.Float32BufferAttribute(A.p, 3)); ge.setAttribute('color', new T.Float32BufferAttribute(A.c, 3));
+      if (uv) ge.setAttribute('uv', new T.Float32BufferAttribute(A.u, 2)); ge.computeVertexNormals(); ge.computeBoundingSphere(); const m = new T.Mesh(ge, mat); m.castShadow = m.receiveShadow = true; bg.add(m); };
+    mk(W, wallMat, true); mk(R, roofMat, false); return true;
+  };
+  g.buildNear = (px, pz) => {
+    if (!B.list) return; const now = performance.now(); let done = 0;
+    for (const cell of B.cells.values()){
+      if (cell.built || done > 1) continue; if (Math.hypot(cell.cx - px, cell.cz - pz) > 260) continue;
+      if (!cell.t0) cell.t0 = now; if (now - cell.tTry < 700) continue; cell.tTry = now;
+      if (buildCell(cell, now - cell.t0 > 12000)){ cell.built = true; done++; cache.clear(); }
+    }
+  };
   const cache = new Map();
   // ground under (x, z), searched from just above the reference height (so trees and roofs above you are ignored)
   g.H = (x, z, y) => {
-    if (DW.Hc(x, z) < WATER_Y - 0.6) return DW.Hy(x, z);   // open sea: the real sea bed, so the kids swim
     const ry = (y !== undefined ? y : S.pos.y) + 1.4, key = Math.round(x*5) + ',' + Math.round(z*5) + ',' + Math.round(ry*2);
     let v = cache.get(key); if (v !== undefined) return v;
-    v = g.downHit(x, ry, z); if (v === null) v = g.downHit(x, ry + 9, z); if (v === null) v = DW.Hy(x, z);   // a step or a slope up (or we started under Google's ground): look a bit higher   // nothing under you yet (still loading): the game's own height
+    v = g.downHit(x, ry, z); if (v === null) v = g.downHit(x, ry + 9, z);
+    if (v === null) v = DW.Hy(x, z);   // nothing loaded under you yet: the game's own height
+    else if (v < WATER_Y + 0.5 && DW.Hc(x, z) < WATER_Y - 0.6) v = DW.Hy(x, z);   // Google shows water here: use the sea bed so the kids swim
+    // (Google's ground decides land vs water, so the kids never sink where Google has a promenade)   // a step or a slope up (or we started under Google's ground): look a bit higher   // nothing under you yet (still loading): the game's own height
     cache.set(key, v); return v;
   };
   // walls: a level ray at knee height (kerbs and steps are lower, so you walk/drive over them; walls and trunks stop you)
@@ -307,7 +361,7 @@ const GG = (function(){
   };
   // how far the camera can sit behind you before a building is in the way (0..1)
   g.camF = (x0, z0, x1, z1) => { const dx = x1 - x0, dz = z1 - z0, L = Math.hypot(dx, dz); if (L < 0.01) return 1; DIR.set(dx/L, 0, dz/L); O.set(x0, S.pos.y + 1.6, z0); const h = cast(O, DIR, L); return h ? h.distance/L : 1; };
-  g.keep = new Set([root]);
+  g.keep = new Set([root, bg]);
   g.hideStatic = () => { scene.children.forEach(o => { if (!g.keep.has(o) && !o.isLight && o !== window.__dome && o !== window.__sun && o !== window.__clouds) g.hidden.push(o); }); };
   // height: Google's heights are above the ellipsoid; the sea at Dibba sits about 31 m below it. Start with that,
   // then fine-tune once on the real sea surface near the start (so Google's sea = the game's water level)
@@ -315,9 +369,10 @@ const GG = (function(){
   let seaPt = null, tries = 0, nextT = 0;
   const findSea = () => { for (let r = 60; r < 900; r += 30) for (let a = 0; a < 24; a++){ const x = Math.cos(a*PI/12)*r, z = Math.sin(a*PI/12)*r; if (DW.Hc(x, z) < WATER_Y - 4) return [x, z]; } return null; };
   g.update = () => {
-    tiles.errorTarget = TOUCH ? 8 : 4;   // Google's sign-in sets 40 (blurry); keep it sharp near the kids
+    tiles.errorTarget = TOUCH ? 10 : 6;   // Google's sign-in sets 40 (blurry); keep it sharp near the kids
     camera.updateMatrixWorld(); tiles.setResolutionFromRenderer(camera, renderer); tiles.update(); cache.clear();
     if ((g.n++ % 20) === 0) for (const o of g.hidden) o.visible = false;
+    if ((g.n % 10) === 0 && g.live && window.__S && window.__S.pos) g.buildNear(window.__S.pos.x, window.__S.pos.z);
     const now = performance.now();
     if (!seaPt && DW && tries === 0){ seaPt = findSea(); if (!seaPt) tries = 99; }
     if (seaPt && tries < 30 && now > nextT){ nextT = now + 2000; tries++;
@@ -2828,7 +2883,7 @@ function updatePlay(dt, t){
     const R = ROOM, ix = clamp(S.pos.x + Math.sin(S.camYaw)*4.6, R.x - R.w/2 + 0.45, R.x + R.w/2 - 0.45), iz = clamp(S.pos.z + Math.cos(S.camYaw)*4.6, R.z - R.d/2 + 0.45, R.z + R.d/2 - 0.45);
     camPos.lerp(new T.Vector3(ix, R.y + 2.9, iz), Math.min(1, dt*6)); camLook.lerp(new T.Vector3(S.pos.x, S.pos.y + 1.1, S.pos.z), Math.min(1, dt*8)); return;
   }
-  if (GG.on){ camD *= 1.45; camH += 4.5; }   // Google's map is sharp from a little higher up (like a drone behind the kids)
+  if (GG.on){ camD *= 1.8; camH += 6.5; }   // Google's map is sharp from a little higher up (like a drone behind the kids)
   let cx = S.pos.x + Math.sin(S.camYaw)*camD, cz = S.pos.z + Math.cos(S.camYaw)*camD, camK = 1;
   if (DIB){ const f = camWall(S.pos.x, S.pos.z, cx, cz); if (f < 1){ camK = Math.max(0.28, f*0.92 - 0.3/camD); cx = S.pos.x + (cx - S.pos.x)*camK; cz = S.pos.z + (cz - S.pos.z)*camK; } }
   let cyy = Math.max(S.pos.y, H(S.pos.x, S.pos.z)) + camH + (S.camPitch || 0)*camD; cyy = Math.max(cyy, H(cx, cz) + 1.6, WATER_Y + 1.5);
@@ -3651,6 +3706,7 @@ requestAnimationFrame(loop);
   const fail = () => { try { localStorage.setItem('kids_world', 'old'); } catch (e) {} if (L) L.textContent = txt; GAME(null); };   // no Dibba data (offline?): the first world
   const s = document.createElement('script'); s.src = 'js/world.js';
   s.onload = () => fetch('data/dibba_scene.json').then(r => { if (!r.ok) throw new Error('data'); return r.json(); })
+    .then(D => fetch('/ion.txt?v=' + Date.now()).then(r => r.ok ? r.text() : '').catch(() => '').then(k => { k = (k || '').trim(); if (k.length > 100 && k.length < 2000) window.__ionTok = k; return D; }))
     .then(D => { if (L) L.textContent = txt; setTimeout(() => GAME({D, world: window.DibbaWorld}), 30); }).catch(fail);
   s.onerror = fail; document.head.appendChild(s);
 })();
